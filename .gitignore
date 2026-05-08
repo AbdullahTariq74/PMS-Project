@@ -1,0 +1,15 @@
+# Project exclusions
+.code-review-graph/
+.claude/
+.mcp.json
+CLAUDE.md
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+env/
+.env
+*.xes.gz
+*.png
+*.webp
+!Project/report/*.png
