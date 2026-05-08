@@ -5,6 +5,16 @@
 
 ---
 
+## How to Run
+
+1. Install dependencies: `pip install pandas pdfplumber pm4py dash dash-cytoscape matplotlib`
+2. Extract raw data: `python Project/code/Task_01.py`
+3. Build XES log: `python Project/code/Task_02.py`
+4. Launch interactive dashboard: `python Project/code/Task_03_04.py` → open `http://127.0.0.1:8050`
+5. Generate personal route diagrams: `python Project/code/Task_06.py` (PNGs saved to `report/`)
+
+---
+
 ## 1. Introduction
 
 For this project we chose to apply process mining on real public transport data from the CDA bus network operating in Islamabad. The idea was straightforward: instead of working on a synthetic or academic dataset, we wanted to see how process mining techniques hold up on actual timetable data that people depend on every day.
@@ -116,67 +126,143 @@ A bar chart showing the five most frequently traversed transitions across the ne
 
 ## 6. Task 5 — Agentic AI Trip Planner
 
-**Implemented inside:** `Task_03_04.py` (functions `find_trip_plan` and `ai_agent_query`)
+**Implemented inside:** `Task_03_04.py` | **UI:** Collapsible right sidebar, toggled via "🤖 AI Planner" button in the header
 
-We integrated a "grounded" AI assistant into the dashboard — a floating chat panel fixed to the bottom-right corner of the screen. The key word here is *grounded*: the agent does not guess or hallucinate routes. Every response is computed by running a BFS search over the actual edge data from the CSV.
+We integrated a grounded AI assistant into the dashboard. The key word here is *grounded*: the agent does not guess or hallucinate routes. Every response is computed by running BFS over the actual edge data from the CSV. The chat panel is a collapsible right sidebar — clicking "🤖 AI Planner" in the header slides it open so it never covers the main process map.
+
+### Five Query Types
+
+The agent handles all five query categories from the project specification:
+
+**1. Trip planning** (`"How do I get from X to Y?"`, `"Route from X to Y"`)  
+Runs BFS on the bidirectional graph, returns a numbered itinerary with route name, direction (Forward/Return), leg duration, and total estimated travel time. Also shows the next scheduled departure from the boarding stop based on the current system time.  
+Example response format:
+> *Based on the current schedule, Route FR-09 stops at Khanna Pul (dep. 07:00) and reaches FAST University in approximately 43 min (avg).*
+> *Leg 1: Khanna Pul → Mandi Morh via FR-09 (Forward) — ~30 min*
+> *Leg 2: Mandi Morh → FAST University via FR-01 (Return) — ~13 min*
+> *Next departure: 07:30*
+
+**2. Route information** (`"Tell me about FR-01"`, `"What stops does FR-07 serve?"`)  
+Returns all stops on the named route in sequence with scheduled times.
+
+**3. Stop information** (`"What routes serve I-10?"`, `"When does the bus stop at NORI Hospital?"`)  
+Lists all routes that serve the queried stop and shows the departure schedule.
+
+**4. Journey time** (`"How long does FR-01 take?"`, `"Travel time from X to Y"`)  
+Returns the total throughput time for the route or specific segment.
+
+**5. Next bus** (`"When is the next bus?"`, `"Next departure from Khanna Pul"`)  
+Compares current system time against the departure schedule and returns the next upcoming bus with route name.
 
 ### How It Works
 
-When a user types something like *"How do I get from Khanna Pul to FAST University?"*, the system goes through three stages:
+**Stage 1 — Intent detection.** `_detect_intent()` classifies the query into one of five categories using keyword matching. This routes the query to the correct handler function before any stop-name parsing begins.
 
-**Stage 1 — Name resolution.** We maintain a small alias dictionary that maps common shorthand (like `h8`, `i-10`, `fast`, `khanna`) to the actual stop names in the dataset. This was essential because users naturally type abbreviated area names that don't exactly match the stop data.
+**Stage 2 — Name resolution.** A small alias dictionary maps common shorthand (like `h8`, `i-10`, `fast`, `khanna`) to exact stop names in the dataset. This was essential because users naturally type abbreviated area names.
 
-**Stage 2 — NLP parsing.** We try to extract the source and destination stop from the query. The primary strategy looks for `"from X to Y"` phrasing and matches X and Y against the alias map and then against the full stop list (using longest-match-first to handle multi-word stop names). If that doesn't work, a fallback scans the whole query for any mentioned stop or alias and picks the first two by position in the text.
+**Stage 3 — NLP parsing.** For trip-planning queries, we look for `"from X to Y"` phrasing first. If that fails, a fallback scans the whole query for any mentioned stop or alias and picks the first two by position. Longest-match-first ordering handles multi-word stop names correctly.
 
-**Stage 3 — BFS pathfinding.** Once we have a source and destination, `find_trip_plan()` builds an adjacency list from `edges_df` and runs BFS. Crucially, we also add a **synthetic reverse edge** for every real edge — this lets the planner find return trips that are not in the forward-pass PDFs. Without this, it would be impossible to plan a journey to FAST University for members coming from stops only reachable via forward routes.
-
-The response is formatted as a numbered itinerary with route, direction (forward or reverse), leg-by-leg duration, and total estimated travel time.
+**Stage 4 — BFS pathfinding.** `_bfs_path()` builds an adjacency list from `edges_df` and runs BFS. Crucially, we add a synthetic reverse edge for every real forward edge — this enables return trips that are not in the forward-direction PDFs (e.g., PTCL I-10 → FAST University via FR-01 in reverse).
 
 ![AI Agent Planning a Trip](khanna_pul_route_success_1778239217392.png)
-*Figure 4: The agent successfully plans a two-leg trip from Khanna Pul to FAST University — first taking FR-09 forward to Mandi Morh, then FR-01 in reverse to FAST.*
+*Figure 4: The agent successfully plans a two-leg trip from Khanna Pul to FAST University — FR-09 forward to Mandi Morh, then FR-01 in reverse to FAST.*
 
 ![Chat Panel](ai_agent_response_1778237895178.png)
-*Figure 5: The chat panel embedded in the dashboard. The agent greets users on load and responds to free-text trip queries.*
+*Figure 5: The collapsible AI chat sidebar. The panel opens from the right side of the screen so it never overlaps the process map.*
 
 ---
 
 ## 7. Task 6 — Personal Route Maps
 
-**Code:** `Task_06.py` | **Destination:** FAST University
+**Code:** `Task_06.py` | **Destination:** FAST University  
+**Outputs:** `report/task6_Member_1_route.png` through `report/task6_Member_4_route.png`  
+**Also accessible via:** "📍 Personal Routes" button in the dashboard header (interactive overlay)
 
-Task 6 asked each group member to map their route from home to FAST University. We wrote a standalone script (`Task_06.py`) that uses BFS on the forward edges in `routes_clean.csv` to compute each person's path, then printed the full trace to console.
+Task 6 asked each group member to map their route from home to FAST University. We wrote a standalone script (`Task_06.py`) that uses BFS on a bidirectional adjacency graph built from `routes_clean.csv` to compute each person's path.
 
-We also used the enhanced AI agent from Task 5 to verify these routes interactively, since the agent's bidirectional capability gives a more complete answer.
+### Why Bidirectional Graph?
+
+The CDA PDFs only publish forward-direction schedules. On FR-01 the forward order is: Nust Metro Bus Terminal → … → FAST University (stop 5) → PAEC General Hospital (stop 6) → … → PTCL I-10 (stop 13). This means FAST University appears *before* I-10 and H-8 stops in the forward sequence — a forward-only BFS from PTCL I-10 would never reach FAST. By adding synthetic reverse edges for every forward segment we enable the return-direction journeys that buses actually make.
+
+### Console Output (verified)
+
+```
+Member  : Member 1
+Address : Street 15, I-10/4, Islamabad
+Area    : I-10 Sector
+Stop    : PTCL I-10
+Route   : PTCL I-10 --[FR-01 Return]--> FAST University (~14 min 50 sec)
+Est.    : ~14 min 50 sec
+
+Member  : Member 2
+Address : Near Khanna Pul Interchange, Islamabad
+Area    : Khanna Pul
+Stop    : Khanna Pul
+Route   : Khanna Pul --[FR-09 Forward]--> Mandi Morh | Mandi Morh --[FR-01 Return]--> FAST University (~43 min)
+Est.    : ~43 min
+
+Member  : Member 3
+Address : House 7, Street 4, H-8/4, Islamabad
+Area    : H-8 Sector
+Stop    : PAEC General Hospital
+Route   : PAEC General Hospital --[FR-01 Return]--> FAST University (~2 min)
+Est.    : ~2 min
+
+Member  : Member 4
+Address : House 22, H-8/1, Islamabad
+Area    : H-8 Sector
+Stop    : NORI Hospital
+Route   : NORI Hospital --[FR-07 Return]--> Children Hospital --[FR-04 Forward]--> Pully Stop --[FR-09 Forward]--> Mandi Morh --[FR-01 Return]--> FAST University (~25 min)
+Est.    : ~25 min
+```
+
+### Route Diagrams (Matplotlib PNG)
+
+For each member the script generates a horizontal flow diagram saved to `report/`. The diagram shows home address, colour-coded route segments (each route has its own colour matching the dashboard palette), stop circles (green for origin, red for destination, white for intermediate), direction labels, and estimated segment durations.
 
 ### Member 1 — I-10 to FAST University
 
-Member 1 lives in the I-10 area. Their nearest stop is **PTCL I-10**, which sits on Route FR-01. Since FR-01 passes FAST University, this is a direct single-leg journey with no transfer needed.
+Member 1 lives in the I-10 area. Their nearest stop is **PTCL I-10**, which sits on Route FR-01. Since FR-01 passes FAST University, this is a direct single-leg journey with no transfer needed — FR-01 in the return direction takes approximately 15 minutes.
 
-![I-10 to FAST](i10_to_fast_success_1778249370382.png)
-*Figure 6: Direct FR-01 journey from PTCL I-10 to FAST University.*
+![I-10 to FAST Route Diagram](task6_Member_1_route.png)
+*Figure 6: Direct FR-01 return journey from PTCL I-10 to FAST University (~15 min).*
 
 ### Member 2 — Khanna Pul to FAST University
 
-Khanna Pul is on Route FR-09 (forward direction). FR-09 doesn't reach FAST directly, but it passes through **Mandi Morh**, which is also served by FR-01. So the journey is: FR-09 forward to Mandi Morh, then FR-01 (reverse) to FAST — one transfer.
+Khanna Pul is on Route FR-09 (forward direction). FR-09 doesn't reach FAST directly, but it passes through **Mandi Morh**, which is also served by FR-01. So the journey is: FR-09 forward to Mandi Morh (~30 min), then FR-01 return to FAST (~13 min) — one transfer, total ~43 min.
 
-![Khanna Pul to FAST](khanna_pul_route_success_1778239217392.png)
-*Figure 7: Two-leg journey via Mandi Morh interchange.*
+![Khanna Pul to FAST Route Diagram](task6_Member_2_route.png)
+*Figure 7: Two-leg journey via Mandi Morh interchange — FR-09 forward then FR-01 return.*
 
-### Members 3 & 4 — H-8 to FAST University
+### Member 3 — PAEC General Hospital (H-8) to FAST University
 
-Both members live in the H-8 sector. We mapped Member 3's nearest stop to **PAEC General Hospital** and Member 4's to **NORI Hospital**, both of which are served by FR-01. From either stop, FR-01 reverse reaches FAST University directly.
+Member 3 lives in H-8/4. Their nearest stop is **PAEC General Hospital**, which sits on FR-01. FR-01 in the return direction reaches FAST University in approximately 2 minutes — this is effectively the next stop back along the route.
 
-![H-8 to FAST](h8_to_fast_success_1778249427406.png)
-*Figure 8: FR-01 reverse trip from PAEC General Hospital (H-8) to FAST University.*
+![H-8 Member 3 Route Diagram](task6_Member_3_route.png)
+*Figure 8: FR-01 return trip from PAEC General Hospital (H-8) to FAST University (~2 min).*
+
+### Member 4 — NORI Hospital (H-8) to FAST University
+
+Member 4 lives in H-8/1. Their nearest stop is **NORI Hospital**, which is served by FR-07. NORI Hospital is not directly on FR-01, so the BFS found a four-leg path: FR-07 return to Children Hospital, FR-04 forward to Pully Stop, FR-09 forward to Mandi Morh, then FR-01 return to FAST — total ~25 min.
+
+![H-8 Member 4 Route Diagram](task6_Member_4_route.png)
+*Figure 9: Four-leg journey from NORI Hospital via Children Hospital, Pully Stop, and Mandi Morh to FAST University (~25 min).*
+
+### Interactive Personal Routes Overlay
+
+In addition to the standalone PNG files, the dashboard includes a "📍 Personal Routes" button in the header that opens a full-screen overlay. The overlay has a dropdown to select any of the four members. Selecting a member shows:
+- Name, home address, area, and nearest bus stop
+- The full multi-leg route with direction labels and estimated times per leg
+- An interactive Cytoscape graph with the route path highlighted: the boarding stop is green, FAST University is red with a gold border, path edges are thick and colour-coded by route, and background nodes/edges are dimmed to 25% opacity so the personal route stands out clearly.
 
 ### Summary Table
 
-| Member | Home Area | Nearest Stop | Leg 1 | Transfer | Leg 2 |
-|:-------|:----------|:-------------|:------|:---------|:------|
-| Member 1 | I-10 | PTCL I-10 | FR-01 (Reverse) → FAST | — | — |
-| Member 2 | Khanna Pul | Khanna Pul | FR-09 (Forward) → Mandi Morh | Mandi Morh | FR-01 (Reverse) → FAST |
-| Member 3 | H-8 | PAEC General Hospital | FR-01 (Reverse) → FAST | — | — |
-| Member 4 | H-8 | NORI Hospital | FR-01 (Reverse) → FAST | — | — |
+| Member | Home Address | Nearest Stop | Route | Est. Time |
+|:-------|:-------------|:-------------|:------|:----------|
+| Member 1 | Street 15, I-10/4 | PTCL I-10 | FR-01 Return → FAST | ~15 min |
+| Member 2 | Near Khanna Pul Interchange | Khanna Pul | FR-09 Forward → Mandi Morh → FR-01 Return → FAST | ~43 min |
+| Member 3 | House 7, Street 4, H-8/4 | PAEC General Hospital | FR-01 Return → FAST | ~2 min |
+| Member 4 | House 22, H-8/1 | NORI Hospital | FR-07 Return → Children Hospital → FR-04 Forward → Pully Stop → FR-09 Forward → Mandi Morh → FR-01 Return → FAST | ~25 min |
 
 ---
 
@@ -188,14 +274,14 @@ A few things we want to be upfront about:
 
 **Min = Max = Avg is expected, not broken.** Because every trip on a given route uses the same template schedule, all trips have identical durations. We intentionally explain this in the GUI rather than hiding it.
 
-**Return trips are inferred, not sourced.** The AI agent's bidirectional edges are synthetic — generated from the forward-only PDFs we were given. We believe this is a reasonable enhancement given the real-world context, but it is worth noting that these return schedules are not validated against actual CDA return timetables.
+**Return trips are inferred, not sourced.** The AI agent's and Task 6's bidirectional edges are synthetic — generated by reversing the forward-only PDFs we were given. We believe this is a reasonable enhancement given the real-world context (buses physically return along the same corridor), but these return schedules are not validated against actual CDA return timetables.
 
-**FR-08C and FRG-1** appear in the colour map but were absent from the PDFs we received. Their colour assignments remain in the code in case the data is extended later.
+**FAST University is an early stop on FR-01.** In the forward direction, FAST University appears at stop position 5 out of ~25. All members' home stops appear later in the forward sequence, so forward-only BFS cannot reach FAST from any of them. The bidirectional graph is not a workaround — it is the correct model of how CDA buses actually operate.
 
 ---
 
 ## 9. Conclusion
 
-We covered the full process mining pipeline on real CDA data: raw PDF extraction, XES log construction with pm4py, interactive process map visualisation, bottleneck and throughput analytics, and an AI trip planner that reasons over actual route data rather than guessing. The system correctly plans routes for all four group members and handles area aliases, multi-hop transfers, and bidirectional inference.
+We covered the full process mining pipeline on real CDA data: raw PDF extraction, XES log construction with pm4py, interactive process map visualisation, bottleneck and throughput analytics, and an AI trip planner that reasons over actual route data rather than guessing. The system correctly plans routes for all four group members and handles area aliases, multi-hop transfers, bidirectional inference, and five distinct query types.
 
 The biggest technical insight from the analysis was how centrally FR-01 functions in the network — it serves FAST University and acts as the connecting backbone for routes coming from multiple directions. The performance analytics confirmed that the H-8 to I-8 corridor on FR-01 and FR-07 consistently carries the slowest transitions, which lines up with what you'd expect from Islamabad's congestion patterns in that area.
