@@ -53,6 +53,20 @@ A "grounded" AI Trip Assistant was integrated into the GUI.
 ## 6. Task 6: Personal Route Maps (Bonus)
 Each team member's route to FAST University was mapped. Thanks to the enhanced bidirectional agent, we can now provide accurate routes for all members!
 
+### Group Member Verification Evidence:
+
+#### Member 1: I-10 to FAST
+The agent correctly identifies the route from **PTCL I-10** (I-10 area) to **FAST University**.
+![I-10 to FAST Success](i10_to_fast_success_1778249370382.png)
+
+#### Member 2: Khanna Pul to FAST
+The agent plans a multi-hop trip from **Khanna Pul** to **Mandi Morh**, then switches to Route FR-01 to reach **FAST**.
+![Khanna Pul Success](khanna_pul_route_success_1778239217392.png)
+
+#### Member 3 & 4: H-8 to FAST
+The agent maps the **H8** area alias to **PAEC General Hospital** and provides a direct return trip to **FAST**.
+![H8 to FAST Success](h8_to_fast_success_1778249427406.png)
+
 | Member | Home Area | Nearest Stop | Route Leg 1 | Route Leg 2 |
 | :--- | :--- | :--- | :--- | :--- |
 | **Member 1** | I-10 | PTCL I-10 | FR-01 (Return) $\rightarrow$ FAST | - |
@@ -80,4 +94,4 @@ You can convert this Markdown (`.md`) file to **Microsoft Word** or **PDF** usin
 ---
 
 ## 8. Analysis & Conclusion
-The process mining analysis revealed that several transitions in the FR-01 and FR-07 routes consistently act as bottlenecks during peak hours. The "Agentic" integration demonstrates how live process data can be made accessible to end-users for practical trip planning, now supporting inferred return trips for a complete user experience.
+The process mining analysis revealed that several transitions in the FR-01 and FR-07 routes consistently act as bottlenecks during peak hours. The "Agentic" integration demonstrates how live process data can be made accessible to end-users for practical trip planning, now supporting inferred return trips and area-based alias recognition for a complete user experience.
