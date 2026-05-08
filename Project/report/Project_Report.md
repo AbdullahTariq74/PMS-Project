@@ -5,16 +5,6 @@
 
 ---
 
-## How to Run
-
-1. Install dependencies: `pip install pandas pdfplumber pm4py dash dash-cytoscape matplotlib`
-2. Extract raw data: `python Project/code/Task_01.py`
-3. Build XES log: `python Project/code/Task_02.py`
-4. Launch interactive dashboard: `python Project/code/Task_03_04.py` → open `http://127.0.0.1:8050`
-5. Generate personal route diagrams: `python Project/code/Task_06.py` (PNGs saved to `report/`)
-
----
-
 ## 1. Introduction
 
 For this project we chose to apply process mining on real public transport data from the CDA bus network operating in Islamabad. The idea was straightforward: instead of working on a synthetic or academic dataset, we wanted to see how process mining techniques hold up on actual timetable data that people depend on every day.
