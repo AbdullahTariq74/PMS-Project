@@ -14,6 +14,7 @@
 import pandas as pd
 import re
 import datetime
+import difflib
 import dash
 from dash import dcc, html, Input, Output, State, callback_context
 import dash_cytoscape as cyto
@@ -25,96 +26,235 @@ import os
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ALIASES = {
+    # University stops
     "fast university": "FAST University",
     "fast uni":        "FAST University",
     "fast":            "FAST University",
+    "nu-fast":         "FAST University",
+    "nu fast":         "FAST University",
     "nust":            "Nust Metro Station",
     "nust metro":      "Nust Metro Station",
+    "nust metro bus":  "Nust Metro Station",
+    "nust bus stop":   "Nust Metro Station",
+    "bahria":          "Bahria University",
+    "bahria uni":      "Bahria University",
+    "islamic uni":     "Islamic University",
+    "iu":              "Islamic University",
+    "comsats":         "COMSATS University",
+    # Hospitals
     "pims":            "PIMS Hospital",
     "pims hospital":   "PIMS Hospital",
+    "paec":            "PAEC General Hospital",
+    "paec hospital":   "PAEC General Hospital",
+    "h8":              "PAEC General Hospital",
+    "h-8":             "PAEC General Hospital",
+    "h8 hospital":     "PAEC General Hospital",
+    "nori":            "NORI Hospital",
+    "nori hospital":   "NORI Hospital",
+    "children hospital": "Children Hospital",
+    "imc":             "IMC Hospital",
+    # Residential / area stops
     "khanna":          "Khanna Pul",
     "khanna pul":      "Khanna Pul",
+    "khanna pull":     "Khanna Pul",
     "i10":             "PTCL I-10",
     "i-10":            "PTCL I-10",
     "ptcl":            "PTCL I-10",
-    "h8":              "PAEC General Hospital",
-    "h-8":             "PAEC General Hospital",
-    "paec":            "PAEC General Hospital",
-    "nori":            "NORI Hospital",
+    "ptcl i10":        "PTCL I-10",
+    "i 10":            "PTCL I-10",
+    "sector i-10":     "PTCL I-10",
+    # Metro / interchange
     "faizabad":        "Faizabad Metro Station",
     "faizabad metro":  "Faizabad Metro Station",
+    "ijp":             "IJP Metro Station",
+    "ijp metro":       "IJP Metro Station",
+    "police foundation": "Police Foundation Metro",
+    "chaman":          "Chaman Metro Station",
+    "golra":           "Golra Morh Metro Station",
+    "golra metro":     "Golra Morh Metro Station",
+    "golra morh":      "Golra Morh",
+    # Sector markaz
     "g9":              "G-9 Markaz",
     "g-9":             "G-9 Markaz",
+    "g9 markaz":       "G-9 Markaz",
     "g10":             "G-10 Markaz",
     "g-10":            "G-10 Markaz",
+    "g10 markaz":      "G-10 Markaz",
     "g11":             "G-11 Markaz",
     "g-11":            "G-11 Markaz",
+    "g11 markaz":      "G-11 Markaz",
     "g8":              "G-8 Markaz",
     "g-8":             "G-8 Markaz",
-    "f7":              "F-7 Markaz",
-    "f-7":             "F-7 Markaz",
-    "f8":              "F-8 Markaz",
-    "f-8":             "F-8 Markaz",
-    "f9":              "F-9 Park",
-    "f-9":             "F-9 Park",
-    "f10":             "F-10 Markaz",
-    "f-10":            "F-10 Markaz",
-    "zero point":      "Zero Point",
+    "g8 markaz":       "G-8 Markaz",
+    # Markets / landmarks
     "abpara":          "Abpara Market",
-    "police foundation": "Police Foundation Metro",
-    "eme":             "NUST EME College",
-    "comsats":         "COMSATS University",
-    "bahria":          "Bahria University",
-    "islamic uni":     "Islamic University",
+    "melody":          "Melody Market",
+    "sabzi mandi":     "Sabzi Mandi",
+    "mandi morh":      "Mandi Morh",
+    "pully":           "Pully Stop",
+    "zero point":      "Zero Point",
+    "karachi company": "Karachi Company",
+    "sohan":           "Sohan",
+    "westridge":       "Westridge",
+    "ctti":            "CTTI",
+    "pir wadhai":      "Pir Wadhai Morh",
+    "ogti":            "OGTI Stop",
+    "sui gas":         "Sui Gas Stop",
+    "iesco":           "IESCO",
+    "cda":             "CDA Stop",
+    "iqbal hall":      "Iqbal Hall",
 }
+
+# Route number aliases
+ROUTE_ALIASES = {
+    "fr01": "FR-01", "fr-01": "FR-01", "route 1": "FR-01", "route fr01": "FR-01",
+    "fr03a": "FR-03A", "fr-03a": "FR-03A", "route 3a": "FR-03A",
+    "fr04": "FR-04", "fr-04": "FR-04", "route 4": "FR-04",
+    "fr07": "FR-07", "fr-07": "FR-07", "route 7": "FR-07",
+    "fr08a": "FR-08A", "fr-08a": "FR-08A", "route 8a": "FR-08A",
+    "fr09": "FR-09", "fr-09": "FR-09", "route 9": "FR-09",
+    "fr11": "FR-11", "fr-11": "FR-11", "route 11": "FR-11",
+    "fr15": "FR-15", "fr-15": "FR-15", "route 15": "FR-15",
+}
+
+GREETINGS = {"hi", "hello", "hey", "salaam", "salam", "assalam", "helo",
+             "hii", "hiii", "sup", "yo", "help", "start", "?"}
 
 
 def _fuzzy_stop(term, all_stops):
-    """Return best matching stop name for a search term, or None."""
+    """Return best matching stop name for a term. Handles typos via difflib."""
     t = term.strip().lower()
-    if not t:
+    if not t or len(t) < 2:
         return None
-    # Check aliases (longest alias first to avoid partial hits)
+    # 1. Alias exact/substring match (longest first)
     for alias in sorted(ALIASES.keys(), key=len, reverse=True):
         if alias in t:
             return ALIASES[alias]
-    # Exact match
+    # 2. Exact stop name match
     for s in all_stops:
         if s.lower() == t:
             return s
-    # Stop name is substring of query
+    # 3. Stop name fully inside query
     for s in sorted(all_stops, key=len, reverse=True):
         if s.lower() in t:
             return s
-    # Query word is substring of stop name
+    # 4. Query fully inside stop name
     for s in sorted(all_stops, key=len):
         if t in s.lower():
             return s
-    # Token-level partial match (any query token len>3 in stop name)
-    tokens = [w for w in t.split() if len(w) > 3]
+    # 5. Token-level substring match
+    q_tokens = [w for w in t.split() if len(w) > 3]
     for s in sorted(all_stops, key=len):
-        if any(tok in s.lower() for tok in tokens):
+        s_tokens = s.lower().split()
+        if q_tokens and any(
+            qt in st or st in qt for qt in q_tokens for st in s_tokens
+        ):
             return s
+    # 6. Token-level fuzzy via difflib — compare each query token against each
+    #    stop-name token (handles "faizabd" → "Faizabad Metro Station")
+    stop_token_map = {}
+    for s in all_stops:
+        for tok in s.lower().split():
+            stop_token_map.setdefault(tok, []).append(s)
+    all_stop_tokens = list(stop_token_map.keys())
+    for qt in (q_tokens if q_tokens else t.split()):
+        if len(qt) < 4:
+            continue
+        close = difflib.get_close_matches(qt, all_stop_tokens, n=1, cutoff=0.72)
+        if close:
+            return stop_token_map[close[0]][0]
+    return None
+
+
+def _resolve_route(text):
+    """Extract a canonical route ID from free text, or None."""
+    t = text.lower().replace(" ", "")
+    for alias, rid in ROUTE_ALIASES.items():
+        if alias.replace(" ", "") in t:
+            return rid
+    # Direct pattern match: FR-01, FR01, fr-01 etc.
+    m = re.search(r'\bfr[-]?(\d{2}[a-z]?)\b', text, re.IGNORECASE)
+    if m:
+        candidate = "FR-" + m.group(1).upper()
+        known = list(ROUTE_ALIASES.values())
+        if candidate in known:
+            return candidate
     return None
 
 
 def _extract_two_stops(text, all_stops):
-    """Pull (src, dst) from 'from X to Y' or positional fallback."""
+    """Pull (src, dst) from natural language. Handles many phrasings."""
     t = text.lower()
     src = dst = None
 
-    if "from" in t and "to" in t:
-        try:
-            after_from = t.split("from", 1)[1]
-            if "to" in after_from:
-                from_part = after_from.split("to", 1)[0]
-                to_part   = after_from.split("to", 1)[1].split("?")[0]
-                src = _fuzzy_stop(from_part, all_stops)
-                dst = _fuzzy_stop(to_part,   all_stops)
-        except Exception:
-            pass
+    # Pattern: "from X to Y"
+    m = re.search(r'\bfrom\b(.+?)\bto\b(.+?)(?:\?|$)', t)
+    if m:
+        s1 = _fuzzy_stop(m.group(1).strip(), all_stops)
+        s2 = _fuzzy_stop(m.group(2).strip(), all_stops)
+        if s1 and s2 and s1 != s2:
+            src, dst = s1, s2
 
-    # Fallback: scan full text for any two stop mentions
+    # Pattern: "to X from Y" (destination mentioned before source)
+    if not (src and dst):
+        m = re.search(r'\bto\b(.+?)\bfrom\b(.+?)(?:\?|$)', t)
+        if m:
+            s1 = _fuzzy_stop(m.group(1).strip(), all_stops)  # destination
+            s2 = _fuzzy_stop(m.group(2).strip(), all_stops)  # source
+            if s1 and s2 and s1 != s2:
+                src, dst = s2, s1
+
+    # Pattern: "between X and Y"
+    if not (src and dst):
+        m = re.search(r'\bbetween\b(.+?)\band\b(.+?)(?:\?|$)', t)
+        if m:
+            s1 = _fuzzy_stop(m.group(1).strip(), all_stops)
+            s2 = _fuzzy_stop(m.group(2).strip(), all_stops)
+            if s1 and s2:
+                src, dst = s1, s2
+
+    # Pattern: "X to Y" without explicit from marker
+    if not (src and dst):
+        m = re.search(r'(.+?)\bto\b(.+?)(?:\?|$)', t)
+        if m:
+            s1 = _fuzzy_stop(m.group(1).strip(), all_stops)
+            s2 = _fuzzy_stop(m.group(2).strip(), all_stops)
+            if s1 and s2 and s1 != s2:
+                src, dst = s1, s2
+
+    # Pattern: destination only ("take me to X", "reach X", "go to X")
+    if not dst:
+        for kw in ["take me to ", "need to get to ", "want to go to ",
+                   "reach ", "get to ", "go to ", "going to ", "travel to ",
+                   "headed to ", "heading to ", "drop me at "]:
+            if kw in t:
+                candidate = t.split(kw, 1)[-1].split("?")[0].strip()
+                candidate = candidate.split(" from ")[0].strip()
+                s = _fuzzy_stop(candidate, all_stops)
+                if s:
+                    dst = s
+                    break
+
+    # Pattern: source only ("I'm at X", "coming from X")
+    if not src:
+        for kw in ["i'm at ", "i am at ", "i am in ", "i'm in ",
+                   "coming from ", "starting from ", "starting at "]:
+            if kw in t:
+                candidate = t.split(kw, 1)[-1].split("?")[0].split(",")[0].strip()
+                s = _fuzzy_stop(candidate, all_stops)
+                if s and s != dst:
+                    src = s
+                    break
+
+    # Pattern: "from X" standalone — fill in missing source
+    if not src and "from " in t:
+        after_from = t.split("from ", 1)[-1].strip().split("?")[0]
+        after_from = after_from.split(" to ")[0].strip()
+        s = _fuzzy_stop(after_from, all_stops)
+        if s and s != dst:
+            src = s
+
+    # Positional fallback: scan full text for any stop mentions in order
     if not src or not dst:
         hits = []
         for alias in sorted(ALIASES.keys(), key=len, reverse=True):
@@ -131,51 +271,140 @@ def _extract_two_stops(text, all_stops):
             if s not in seen:
                 seen.add(s)
                 unique.append(s)
-        if len(unique) >= 2:
-            src = unique[0]
-            dst = unique[1]
+        if not src and not dst and len(unique) >= 2:
+            src, dst = unique[0], unique[1]
+        elif not src and dst:
+            for s in unique:
+                if s != dst:
+                    src = s
+                    break
+        elif src and not dst:
+            for s in unique:
+                if s != src:
+                    dst = s
+                    break
 
     return src, dst
 
 
-def _detect_intent(text):
+def _detect_intent(text, all_stops):
+    """
+    Classify user query into one of 6 intents.
+    Falls back to smart inference using detected stops.
+    """
     t = text.lower()
+
+    # Greetings / help
+    words = set(re.sub(r'[^\w\s]', '', t).split())
+    if words & GREETINGS or t.strip() in GREETINGS:
+        return "greeting"
+
+    # Route info: user names a route number
+    if _resolve_route(t):
+        return "route_info"
+
+    # Stop/route lookup
     if any(kw in t for kw in [
         "which route", "what route", "what bus", "which bus",
         "goes through", "pass through", "routes through",
-        "serve", "stops at", "stop at"
+        "what routes", "which routes", "buses through", "bus through",
+        "serve", "serving", "serves", "stops at", "stop at",
+        "routes serve", "buses serve", "bus at",
     ]):
         return "route_through"
+
+    # Departure / schedule
     if any(kw in t for kw in [
-        "what time", "when does", "when do", "next bus",
-        "last bus", "first bus", "departs", "leaves from",
-        "departure", "schedule", "timing"
+        "what time", "when does", "when do", "next bus", "next departure",
+        "last bus", "first bus", "departs", "departure time", "leaves from",
+        "departure", "schedule", "timing", "timings", "bus timing",
+        "what are the timings", "when is the bus", "when will the bus",
+        "bus schedule", "bus time",
     ]):
         return "departure_time"
+
+    # Travel time / duration
     if any(kw in t for kw in [
-        "how long", "how much time", "travel time",
-        "takes to", "time does it", "duration", "minutes to"
+        "how long", "how much time", "travel time", "duration",
+        "takes to", "time does it", "minutes to", "eta",
+        "estimated time", "how many minutes", "how many hours",
+        "time from", "time between",
     ]):
         return "travel_time"
+
+    # Connectivity check
     if any(kw in t for kw in [
-        "connect", "do any routes", "is there a route",
-        "any bus between", "can i get", "is there a bus"
+        "connect", "connected", "connection", "is there a route",
+        "any bus between", "is there a bus", "do buses go",
+        "can i travel", "possible to go", "is it possible",
+        "direct route", "any direct", "do any routes",
     ]):
         return "connectivity"
+
+    # Trip planning — broad net
     if any(kw in t for kw in [
-        "from", "to", "how do i get", "options", "travel to",
-        "go to", "reach", "i have to", "i want to", "i need to",
-        "way to", "get to"
+        "from", "how do i get", "how to get", "how can i get",
+        "how to reach", "how do i reach", "i want to go",
+        "i need to go", "i have to go", "i am going", "i'm going",
+        "take me to", "i'm at", "i am at", "drop me at",
+        "route from", "way to get", "options to reach",
+        "travel to", "go to", "reach", "get to", "going to",
     ]):
         return "trip_plan"
+
+    # Smart fallback: infer from detected stops
+    src, dst = _extract_two_stops(text, all_stops)
+    if src and dst:
+        return "trip_plan"
+    if src or dst:
+        return "departure_time"
+
     return "unknown"
 
 
+def _handle_greeting():
+    return (
+        "**Agent:** Salaam! I'm your CDA Bus Trip Assistant.  \n\n"
+        "Here's what you can ask me:\n\n"
+        "- *How do I get from Khanna Pul to FAST University?*\n"
+        "- *Take me to FAST from I-10*\n"
+        "- *Which routes serve Faizabad Metro Station?*\n"
+        "- *What time does the first bus leave from PTCL I-10?*\n"
+        "- *How long does it take from G-9 to NUST Metro?*\n"
+        "- *Is there a bus between Abpara and Mandi Morh?*\n"
+        "- *Tell me about FR-01* or *Show FR-09 stops*\n\n"
+        "Just type naturally — I'll figure it out!"
+    )
+
+
+def _handle_route_info(text, current_df):
+    """Show all stops for a named route in sequence."""
+    rid = _resolve_route(text)
+    if not rid:
+        return "**Agent:** I couldn't identify a route number. Try: *'Tell me about FR-01'*"
+
+    rows = current_df[current_df["route_id"] == rid].drop_duplicates("stop_sequence")
+    rows = rows.sort_values("stop_sequence")[["stop_sequence", "stop_name",
+                                              "arrival_time", "departure_time"]]
+    if rows.empty:
+        return f"**Agent:** No data found for route **{rid}**."
+
+    trips  = current_df[current_df["route_id"] == rid]["trip_id"].nunique()
+    stops  = rows["stop_name"].tolist()
+    timing = rows[["stop_sequence", "stop_name", "arrival_time"]].values.tolist()
+
+    header = (f"**Agent:** Route **{rid}** has **{len(stops)} stops** "
+              f"and runs **{trips} trips** per day.\n\n"
+              f"**Stop sequence:**\n")
+    lines  = [f"{int(seq)}. {name} — arr. {arr[:5]}" for seq, name, arr in timing]
+    return header + "\n".join(lines)
+
+
 def _handle_route_through(text, current_df, all_stops):
-    # Try to extract the stop from after keywords
     t = text.lower()
     stop = None
-    for kw in ["through ", "via ", "serves ", "stops at ", "at ", "for "]:
+    for kw in ["through ", "via ", "serves ", "serving ", "stops at ",
+               "stop at ", "at ", "for ", "near "]:
         if kw in t:
             candidate = t.split(kw, 1)[-1].strip().split("?")[0].strip()
             stop = _fuzzy_stop(candidate, all_stops)
@@ -184,14 +413,14 @@ def _handle_route_through(text, current_df, all_stops):
     if not stop:
         stop = _fuzzy_stop(t, all_stops)
     if not stop:
-        return ("**Agent:** I couldn't identify which stop you're asking about. "
+        return ("**Agent:** I couldn't identify the stop you're asking about. "
                 "Try: *'Which route goes through Faizabad Metro Station?'*")
 
     routes = sorted(current_df[current_df["stop_name"] == stop]["route_id"].unique().tolist())
     if not routes:
         return f"**Agent:** No routes found serving **{stop}** in the dataset."
 
-    routes_str = ", ".join([f"**{r}**" for r in routes])
+    routes_str  = ", ".join([f"**{r}**" for r in routes])
     trips_total = current_df[current_df["stop_name"] == stop]["trip_id"].nunique()
     return (f"**Agent:** The stop **{stop}** is served by: {routes_str}  \n"
             f"A total of **{trips_total}** scheduled trips pass through this stop.")
@@ -200,7 +429,8 @@ def _handle_route_through(text, current_df, all_stops):
 def _handle_departure_time(text, current_df, all_stops):
     t = text.lower()
     stop = None
-    for kw in ["from ", "at ", "leave from ", "depart from "]:
+    for kw in ["from ", "at ", "leave from ", "depart from ",
+               "leaving from ", "bus from ", "buses from "]:
         if kw in t:
             candidate = t.split(kw, 1)[-1].strip().split("?")[0].strip()
             stop = _fuzzy_stop(candidate, all_stops)
@@ -217,18 +447,23 @@ def _handle_departure_time(text, current_df, all_stops):
     if not times:
         return f"**Agent:** No departure times found for **{stop}**."
 
+    now_str  = datetime.datetime.now().strftime("%H:%M")
+    upcoming = [t2 for t2 in times if t2 >= now_str]
+    next_dep = upcoming[0] if upcoming else times[0]
+
     if "last" in t:
         return (f"**Agent:** The **last departure** from **{stop}** is at **{times[-1]}**.  \n"
                 f"This stop has {len(times)} scheduled departures throughout the day.")
-    if "first" in t or "next" in t or "earliest" in t:
+    if "first" in t or "earliest" in t:
         return (f"**Agent:** The **first departure** from **{stop}** is at **{times[0]}**.  \n"
                 f"This stop has {len(times)} scheduled departures throughout the day.")
 
-    shown = times[:10]
-    more  = f" *(+{len(times)-10} more)*" if len(times) > 10 else ""
+    shown  = times[:10]
+    more   = f" *(+{len(times)-10} more)*" if len(times) > 10 else ""
     routes = sorted(rows["route_id"].unique().tolist())
     return (f"**Agent:** Departures from **{stop}** (routes: {', '.join(routes)}):  \n"
-            f"{', '.join(shown)}{more}")
+            f"{', '.join(shown)}{more}  \n"
+            f"**Next departure: {next_dep}**")
 
 
 def _handle_travel_time(text, current_df, edges_df, all_stops):
@@ -245,15 +480,12 @@ def _handle_connectivity(text, current_df, edges_df, all_stops):
     src, dst = _extract_two_stops(text, all_stops)
     if not src or not dst:
         return ("**Agent:** Please name two stops. "
-                "E.g. *'Do any routes connect G-9 Markaz to F-8 Markaz?'*")
+                "E.g. *'Is there a bus between Abpara and Mandi Morh?'*")
     result = find_trip_plan(src, dst, current_df, edges_df)
     if "couldn't find" in result.lower():
-        return (f"**Agent:** No direct or connecting bus route was found between "
+        return (f"**Agent:** No connecting bus route was found between "
                 f"**{src}** and **{dst}** in the current CDA dataset.")
-    return result.replace(
-        "I found a route",
-        f"Yes — there is a connection between **{src}** and **{dst}**. Here's how"
-    )
+    return result
 
 
 def _bfs_path(start_stop, end_stop, edges_df_arg):
@@ -347,18 +579,18 @@ def find_trip_plan(start_stop, end_stop, current_df, edges_df_arg):
 
 def ai_agent_query(user_text, current_df, edges_df):
     """
-    Entry point for the chat panel. Detects intent and dispatches
-    to the appropriate handler. Handles 5 query types:
-      1. route_through  — which routes serve stop X
-      2. departure_time — what time does bus leave from X
-      3. travel_time    — how long from X to Y
-      4. connectivity   — do any routes connect X to Y
-      5. trip_plan      — how do I get from X to Y (step-by-step)
+    Entry point for the chat panel.
+    Classifies intent, then dispatches to the right handler.
+    Falls back intelligently based on detected stops if intent is ambiguous.
     """
     t         = user_text.strip()
     all_stops = current_df["stop_name"].unique()
-    intent    = _detect_intent(t.lower())
+    intent    = _detect_intent(t, all_stops)
 
+    if intent == "greeting":
+        return _handle_greeting()
+    if intent == "route_info":
+        return _handle_route_info(t, current_df)
     if intent == "route_through":
         return _handle_route_through(t, current_df, all_stops)
     if intent == "departure_time":
@@ -373,14 +605,26 @@ def ai_agent_query(user_text, current_df, edges_df):
             if src == dst:
                 return f"**Agent:** You are already at **{src}**!"
             return find_trip_plan(src, dst, current_df, edges_df)
+        if dst and not src:
+            return (f"**Agent:** Sure! Where are you travelling **to {dst}** from?  \n"
+                    f"Try: *'How do I get from [your stop] to {dst}?'*")
+
+    # Unknown intent — try to be helpful based on what we found
+    src, dst = _extract_two_stops(t, all_stops)
+    if src and dst:
+        return find_trip_plan(src, dst, current_df, edges_df)
+    if src or dst:
+        stop = src or dst
+        return _handle_departure_time(t, current_df, all_stops)
 
     return (
-        "**Agent:** Hi! I am your CDA Trip Assistant. Here are some things you can ask:\n\n"
-        "- *How do I get from Khanna Pul to FAST University?*\n"
-        "- *Which route goes through Faizabad?*\n"
-        "- *What time does the last bus leave from PTCL I-10?*\n"
-        "- *How long does it take from G-9 Markaz to NUST Metro Station?*\n"
-        "- *Do any routes connect Abpara to Zero Point?*"
+        "**Agent:** I'm not sure what you're asking. Try something like:\n\n"
+        "- *Take me to FAST from I-10*\n"
+        "- *Which bus goes through Faizabad?*\n"
+        "- *Next bus from Khanna Pul?*\n"
+        "- *How long from G-9 to NUST Metro?*\n"
+        "- *Tell me about FR-01*\n"
+        "- *Is there a route between Abpara and Mandi Morh?*"
     )
 
 
