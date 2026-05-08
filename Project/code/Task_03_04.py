@@ -13,6 +13,7 @@
 
 import pandas as pd
 import re
+import datetime
 import dash
 from dash import dcc, html, Input, Output, State, callback_context
 import dash_cytoscape as cyto
@@ -255,42 +256,93 @@ def _handle_connectivity(text, current_df, edges_df, all_stops):
     )
 
 
-def find_trip_plan(start_stop, end_stop, current_df, edges_df):
+def _bfs_path(start_stop, end_stop, edges_df_arg):
     """
-    BFS over bidirectional graph to find shortest stop-hop path.
-    Synthetic reverse edges allow return-trip planning (PDFs are forward-only).
+    Raw BFS — returns list of (src, tgt, route_id, dur_sec, direction) or None.
+    Builds a bidirectional graph so return trips can be planned even though
+    the CDA PDFs only publish the forward schedule.
     """
-    start_stop = start_stop.strip()
-    end_stop   = end_stop.strip()
-
     adj = collections.defaultdict(list)
-    for _, row in edges_df.drop_duplicates(["src", "tgt", "route_id"]).iterrows():
+    for _, row in edges_df_arg.drop_duplicates(["src", "tgt", "route_id"]).iterrows():
         adj[row["src"]].append((row["tgt"], row["route_id"], row["dur_sec"], "forward"))
         adj[row["tgt"]].append((row["src"], row["route_id"], row["dur_sec"], "reverse"))
 
     queue   = collections.deque([(start_stop, [])])
     visited = {start_stop}
-
     while queue:
         curr, path = queue.popleft()
         if curr == end_stop:
-            total = sum(dur for _, _, _, dur, _ in path)
-            resp  = (f"**Agent:** I found a route from **{start_stop}** to "
-                     f"**{end_stop}**!\n\n")
-            for i, (s, t, rid, dur, direction) in enumerate(path):
-                d_label = "Forward" if direction == "forward" else "Return"
-                resp   += (f"{i+1}. Take **Route {rid}** ({d_label}) from *{s}* to *{t}* "
-                           f"— approx {int(dur//60)}m {int(dur%60)}s\n")
-            resp += f"\n**Total estimated travel time: {int(total//60)} min {int(total%60)} sec**"
-            return resp
-
+            return path
         for tgt, rid, dur, direction in adj.get(curr, []):
             if tgt not in visited:
                 visited.add(tgt)
                 queue.append((tgt, path + [(curr, tgt, rid, dur, direction)]))
+    return None
 
-    return (f"**Agent:** Sorry, I couldn't find a direct or connecting bus route "
-            f"between **{start_stop}** and **{end_stop}** in the current CDA dataset.")
+
+def find_trip_plan(start_stop, end_stop, current_df, edges_df_arg):
+    """
+    BFS trip planner with departure-time grounding.
+    Response format matches the project spec example:
+      'Route X stops at [start] (dep. HH:MM) and reaches [end] in ~N min.
+       Next departure: HH:MM'
+    """
+    start_stop = start_stop.strip()
+    end_stop   = end_stop.strip()
+
+    path = _bfs_path(start_stop, end_stop, edges_df_arg)
+    if path is None:
+        return (f"**Agent:** Sorry, I couldn't find a direct or connecting bus route "
+                f"between **{start_stop}** and **{end_stop}** in the current CDA dataset.")
+
+    total      = sum(dur for _, _, _, dur, _ in path)
+    first_rid  = path[0][2]
+
+    # Departure times from start stop on the first route used
+    dep_rows = current_df[
+        (current_df["stop_name"] == start_stop) &
+        (current_df["route_id"]  == first_rid)
+    ]["departure_time"].dropna().str[:5].unique()
+    dep_times = sorted(dep_rows.tolist())
+
+    # "Next departure" — first scheduled time >= current clock time
+    now_str  = datetime.datetime.now().strftime("%H:%M")
+    next_dep = next((t for t in dep_times if t >= now_str), dep_times[0] if dep_times else None)
+    first_dep = dep_times[0]  if dep_times else "N/A"
+    last_dep  = dep_times[-1] if dep_times else "N/A"
+
+    # Build step-by-step legs (collapse consecutive same-route hops)
+    legs, leg_rid, leg_dir = [], path[0][2], path[0][4]
+    leg_start, leg_end, leg_dur = path[0][0], path[0][1], path[0][3]
+    for src, tgt, rid, dur, direction in path[1:]:
+        if rid == leg_rid and direction == leg_dir:
+            leg_end  = tgt
+            leg_dur += dur
+        else:
+            legs.append((leg_start, leg_end, leg_rid, leg_dir, leg_dur))
+            leg_rid, leg_dir = rid, direction
+            leg_start, leg_end, leg_dur = src, tgt, dur
+    legs.append((leg_start, leg_end, leg_rid, leg_dir, leg_dur))
+
+    resp = (f"**Agent:** Based on the current schedule, "
+            f"**Route {first_rid}** stops at **{start_stop}** "
+            f"(dep. {first_dep}) and reaches **{end_stop}** "
+            f"in approximately **{int(total // 60)} min** (avg).\n\n")
+
+    if len(legs) == 1:
+        ls, le, rid, direction, dur = legs[0]
+        d_label = "Forward" if direction == "forward" else "Return"
+        resp += f"Direct — **{rid}** ({d_label}): *{ls}* → *{le}* (~{int(dur//60)}m {int(dur%60)}s)\n"
+    else:
+        for i, (ls, le, rid, direction, dur) in enumerate(legs, 1):
+            d_label = "Forward" if direction == "forward" else "Return"
+            resp   += (f"{i}. **{rid}** ({d_label}): *{ls}* → *{le}* "
+                       f"(~{int(dur//60)}m {int(dur%60)}s)\n")
+
+    resp += (f"\n**Total travel time: ~{int(total//60)} min {int(total%60)} sec**  \n"
+             f"Departures from **{start_stop}**: {first_dep} — {last_dep}  \n"
+             f"**Next departure: {next_dep}**")
+    return resp
 
 
 def ai_agent_query(user_text, current_df, edges_df):
@@ -456,6 +508,111 @@ ROUTE_COLOURS = {
     "FRG-1":  "#a9a9a9",
 }
 DEFAULT_COLOUR = "#aaaaaa"
+
+# ── Task 6: Member data ───────────────────────────────────────────────────────
+MEMBERS = [
+    {"label": "Member 1 — I-10",       "value": "m1", "name": "Member 1", "address": "Street 15, I-10/4, Islamabad",          "area": "I-10 Sector",   "stop": "PTCL I-10"},
+    {"label": "Member 2 — Khanna Pul", "value": "m2", "name": "Member 2", "address": "Near Khanna Pul Interchange, Islamabad", "area": "Khanna Pul",    "stop": "Khanna Pul"},
+    {"label": "Member 3 — H-8",        "value": "m3", "name": "Member 3", "address": "House 7, Street 4, H-8/4, Islamabad",   "area": "H-8 Sector",    "stop": "PAEC General Hospital"},
+    {"label": "Member 4 — H-8",        "value": "m4", "name": "Member 4", "address": "House 22, H-8/1, Islamabad",            "area": "H-8 Sector",    "stop": "NORI Hospital"},
+]
+
+T6_STYLESHEET = [
+    {"selector": "node", "style": {
+        "label": "data(label)", "background-color": "#2a2a2a",
+        "color": "#555", "text-outline-color": "#000", "text-outline-width": "1px",
+        "font-size": "8px", "width": "18px", "height": "18px",
+        "text-valign": "bottom", "text-halign": "center", "text-margin-y": "4px",
+    }},
+    {"selector": ".path-node", "style": {
+        "background-color": "data(colour)", "color": "#fff",
+        "text-outline-color": "#111", "text-outline-width": "2px",
+        "font-size": "10px", "width": "28px", "height": "28px",
+    }},
+    {"selector": ".start-node", "style": {
+        "background-color": "#00e676", "color": "#000",
+        "text-outline-color": "#003300", "text-outline-width": "2px",
+        "border-width": "3px", "border-color": "#ffffff",
+        "font-size": "11px", "width": "38px", "height": "38px",
+    }},
+    {"selector": ".end-node", "style": {
+        "background-color": "#e94560", "color": "#fff",
+        "text-outline-color": "#550000", "text-outline-width": "2px",
+        "border-width": "3px", "border-color": "#FFD700",
+        "font-size": "11px", "width": "38px", "height": "38px",
+    }},
+    {"selector": "edge", "style": {
+        "line-color": "#2a2a2a", "target-arrow-color": "#2a2a2a",
+        "target-arrow-shape": "triangle", "curve-style": "bezier",
+        "opacity": 0.25, "width": 1,
+    }},
+    {"selector": ".path-edge", "style": {
+        "line-color": "data(colour)", "target-arrow-color": "data(colour)",
+        "target-arrow-shape": "triangle", "curve-style": "bezier",
+        "width": 6, "opacity": 1.0,
+        "label": "data(label)", "font-size": "9px", "color": "#fff",
+        "text-background-color": "#000", "text-background-opacity": 0.75,
+        "text-background-padding": "2px", "text-rotation": "autorotate",
+    }},
+]
+
+
+def build_member_path_elements(member_stop):
+    """Build Cytoscape elements for Task 6 with the member's path highlighted."""
+    target = "FAST University"
+    path   = _bfs_path(member_stop, target, edges_df)
+    if not path:
+        return [], []
+
+    path_edge_set = {(src, tgt) for src, tgt, _, _, _ in path}
+    path_stop_set = {member_stop, target}
+    for src, tgt, _, _, _ in path:
+        path_stop_set.add(src)
+        path_stop_set.add(tgt)
+
+    routes_used = {rid for _, _, rid, _, _ in path}
+    subset      = agg[agg["route_id"].isin(routes_used)]
+    all_stops   = pd.concat([subset["src"], subset["tgt"]]).unique()
+
+    # Build leg summary for info card
+    legs, leg_rid, leg_dir = [], path[0][2], path[0][4]
+    leg_start, leg_end, leg_dur = path[0][0], path[0][1], path[0][3]
+    for src, tgt, rid, dur, direction in path[1:]:
+        if rid == leg_rid and direction == leg_dir:
+            leg_end = tgt; leg_dur += dur
+        else:
+            legs.append((leg_start, leg_end, leg_rid, leg_dir, leg_dur))
+            leg_rid, leg_dir = rid, direction
+            leg_start, leg_end, leg_dur = src, tgt, dur
+    legs.append((leg_start, leg_end, leg_rid, leg_dir, leg_dur))
+
+    stop_colour = {}
+    for _, row in subset.iterrows():
+        stop_colour.setdefault(row["src"], ROUTE_COLOURS.get(row["route_id"], DEFAULT_COLOUR))
+        stop_colour.setdefault(row["tgt"], ROUTE_COLOURS.get(row["route_id"], DEFAULT_COLOUR))
+
+    nodes = []
+    for stop in all_stops:
+        cls    = ("end-node"   if stop == target      else
+                  "start-node" if stop == member_stop else
+                  "path-node"  if stop in path_stop_set else "")
+        colour = stop_colour.get(stop, DEFAULT_COLOUR)
+        nodes.append({"data": {"id": stop, "label": stop, "colour": colour}, "classes": cls})
+
+    edges = []
+    for _, row in subset.iterrows():
+        in_path = ((row["src"], row["tgt"]) in path_edge_set or
+                   (row["tgt"], row["src"]) in path_edge_set)
+        colour  = ROUTE_COLOURS.get(row["route_id"], DEFAULT_COLOUR) if in_path else "#2a2a2a"
+        edges.append({"data": {
+            "id":       f"{row['route_id']}__{row['src']}__{row['tgt']}",
+            "source":   row["src"], "target": row["tgt"],
+            "route_id": row["route_id"],
+            "label":    f"{row['route_id']} — {row['dur_label']}" if in_path else "",
+            "colour":   colour,
+        }, "classes": "path-edge" if in_path else ""})
+
+    return nodes + edges, legs
 
 
 def build_elements(selected_route, threshold_sec):
@@ -763,19 +920,33 @@ app.layout = html.Div(
                          style={"marginLeft": "auto", "display": "flex",
                                 "gap": "8px", "flexWrap": "wrap", "alignItems": "center"}),
 
-                # ── AI toggle button ──────────────────────────────────────────
-                html.Button(
-                    "🤖 AI Planner",
-                    id="ai-toggle-btn",
-                    n_clicks=0,
-                    style={
-                        "backgroundColor": "#e94560", "color": "#fff",
-                        "border": "none", "borderRadius": "20px",
-                        "padding": "8px 16px", "cursor": "pointer",
-                        "fontSize": "12px", "fontWeight": "bold",
-                        "whiteSpace": "nowrap",
-                    }
-                ),
+                # ── Header buttons ────────────────────────────────────────────
+                html.Div(style={"display": "flex", "gap": "8px", "alignItems": "center"}, children=[
+                    html.Button(
+                        "🤖 AI Planner",
+                        id="ai-toggle-btn",
+                        n_clicks=0,
+                        style={
+                            "backgroundColor": "#e94560", "color": "#fff",
+                            "border": "none", "borderRadius": "20px",
+                            "padding": "8px 16px", "cursor": "pointer",
+                            "fontSize": "12px", "fontWeight": "bold",
+                            "whiteSpace": "nowrap",
+                        }
+                    ),
+                    html.Button(
+                        "📍 Personal Routes",
+                        id="t6-open-btn",
+                        n_clicks=0,
+                        style={
+                            "backgroundColor": "#0f3460", "color": "#e94560",
+                            "border": "2px solid #e94560", "borderRadius": "20px",
+                            "padding": "8px 16px", "cursor": "pointer",
+                            "fontSize": "12px", "fontWeight": "bold",
+                            "whiteSpace": "nowrap",
+                        }
+                    ),
+                ]),
             ]
         ),
 
@@ -880,6 +1051,58 @@ app.layout = html.Div(
                    "padding": "12px 24px", "display": "flex", "gap": "32px",
                    "flexWrap": "wrap", "alignItems": "flex-start", "overflowX": "auto"},
             children=_build_analytics_bar("ALL", DEFAULT_THRESHOLD_SEC),
+        ),
+
+        # ── Task 6: Personal Routes full-screen overlay ───────────────────────
+        html.Div(
+            id="t6-overlay",
+            style={"display": "none", "position": "fixed", "top": 0, "left": 0,
+                   "width": "100vw", "height": "100vh",
+                   "backgroundColor": "#1a1a2e", "zIndex": 2000,
+                   "flexDirection": "column"},
+            children=[
+                # Header bar
+                html.Div(style={
+                    "backgroundColor": "#16213e", "padding": "12px 24px",
+                    "borderBottom": "2px solid #e94560",
+                    "display": "flex", "alignItems": "center", "gap": "20px"
+                }, children=[
+                    html.H2("📍 Task 6 — Personal Route Maps",
+                            style={"color": "#e94560", "margin": 0, "fontSize": "18px"}),
+                    html.P("Each member's home address to FAST University — verified on live route data",
+                           style={"color": "#888", "margin": 0, "fontSize": "12px", "flex": 1}),
+                    dcc.Dropdown(
+                        id="member-dropdown",
+                        options=[{"label": m["label"], "value": m["value"]} for m in MEMBERS],
+                        value="m1",
+                        clearable=False,
+                        style={"width": "240px", "color": "#000"},
+                    ),
+                    html.Button("✕ Close", id="t6-close-btn", n_clicks=0,
+                                style={"backgroundColor": "#e94560", "color": "#fff",
+                                       "border": "none", "borderRadius": "8px",
+                                       "padding": "8px 18px", "cursor": "pointer",
+                                       "fontSize": "13px", "fontWeight": "bold"}),
+                ]),
+                # Body: info card (left) + Cytoscape graph (right)
+                html.Div(style={"display": "flex", "flex": 1, "overflow": "hidden"}, children=[
+                    # Left info card
+                    html.Div(id="member-info-card",
+                             style={"width": "340px", "backgroundColor": "#16213e",
+                                    "borderRight": "2px solid #0f3460",
+                                    "padding": "20px", "overflowY": "auto",
+                                    "color": "#cccccc"}),
+                    # Right Cytoscape
+                    cyto.Cytoscape(
+                        id="t6-graph",
+                        elements=[],
+                        layout={"name": "dagre", "rankDir": "LR", "spacingFactor": 1.6},
+                        style={"flex": "1", "height": "100%", "backgroundColor": "#1a1a2e"},
+                        stylesheet=T6_STYLESHEET,
+                        minZoom=0.1, maxZoom=4.0,
+                    ),
+                ]),
+            ]
         ),
     ]
 )
@@ -1113,6 +1336,107 @@ def update_chat(n_clicks, n_submit, user_text, history):
                         "borderLeft": "3px solid #e94560"})
     )
     return new_history, ""
+
+
+# ── Task 6: overlay toggle ────────────────────────────────────────────────────
+@app.callback(
+    Output("t6-overlay", "style"),
+    Input("t6-open-btn",  "n_clicks"),
+    Input("t6-close-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_t6_overlay(open_clicks, close_clicks):
+    trigger = callback_context.triggered[0]["prop_id"]
+    if "t6-open-btn" in trigger:
+        return {"display": "flex", "position": "fixed", "top": 0, "left": 0,
+                "width": "100vw", "height": "100vh",
+                "backgroundColor": "#1a1a2e", "zIndex": 2000, "flexDirection": "column"}
+    return {"display": "none"}
+
+
+# ── Task 6: member route visualization ───────────────────────────────────────
+@app.callback(
+    Output("t6-graph",        "elements"),
+    Output("member-info-card", "children"),
+    Input("member-dropdown",  "value"),
+)
+def update_member_route(member_val):
+    member = next((m for m in MEMBERS if m["value"] == member_val), MEMBERS[0])
+    elements, legs = build_member_path_elements(member["stop"])
+    total_sec = sum(dur for _, _, _, _, dur in legs) if legs else 0
+
+    def _row(label, value, colour="#cccccc"):
+        return html.Div(style={"display": "flex", "justifyContent": "space-between",
+                               "borderBottom": "1px solid #0f3460",
+                               "padding": "6px 0", "marginBottom": "4px"}, children=[
+            html.Span(label, style={"color": "#888", "fontSize": "12px"}),
+            html.Span(value, style={"color": colour, "fontWeight": "bold", "fontSize": "12px",
+                                    "maxWidth": "200px", "textAlign": "right", "wordBreak": "break-word"}),
+        ])
+
+    leg_items = []
+    for i, (ls, le, rid, direction, dur) in enumerate(legs, 1):
+        d_label = "Return" if direction == "reverse" else "Forward"
+        colour  = ROUTE_COLOURS.get(rid, DEFAULT_COLOUR)
+        leg_items.append(html.Div(style={
+            "backgroundColor": "#0d1b2a", "border": f"1px solid {colour}",
+            "borderLeft": f"5px solid {colour}", "borderRadius": "6px",
+            "padding": "8px 12px", "marginBottom": "8px",
+        }, children=[
+            html.Div(f"Leg {i} — Route {rid} ({d_label})",
+                     style={"color": colour, "fontWeight": "bold", "fontSize": "12px"}),
+            html.Div(f"{ls}  →  {le}",
+                     style={"color": "#ccc", "fontSize": "11px", "marginTop": "3px"}),
+            html.Div(f"~{fmt_duration(dur)}",
+                     style={"color": "#fbbf24", "fontSize": "11px", "marginTop": "2px"}),
+        ]))
+
+    # Departure times from member stop
+    first_route = legs[0][2] if legs else None
+    dep_times   = []
+    if first_route:
+        dep_times = sorted(df[
+            (df["stop_name"] == member["stop"]) & (df["route_id"] == first_route)
+        ]["departure_time"].dropna().str[:5].unique().tolist())
+
+    card = [
+        html.H3(member["name"],
+                style={"color": "#e94560", "marginTop": 0, "marginBottom": "4px"}),
+        html.Hr(style={"borderColor": "#0f3460", "marginBottom": "12px"}),
+        _row("Home Address", member["address"]),
+        _row("Area",         member["area"]),
+        _row("Nearest Stop", member["stop"], "#60a5fa"),
+        _row("Destination",  "FAST University", "#e94560"),
+        _row("Total Time",   f"~{fmt_duration(total_sec)}", "#fbbf24"),
+        html.Hr(style={"borderColor": "#0f3460", "margin": "12px 0"}),
+        html.H5("Route Legs", style={"color": "#e94560", "fontSize": "13px", "marginBottom": "8px"}),
+        *leg_items,
+    ]
+    if dep_times:
+        card += [
+            html.Hr(style={"borderColor": "#0f3460", "margin": "12px 0"}),
+            html.H5("Departure Times from Stop",
+                    style={"color": "#e94560", "fontSize": "13px", "marginBottom": "6px"}),
+            html.P(f"First: {dep_times[0]}   Last: {dep_times[-1]}",
+                   style={"color": "#fbbf24", "fontSize": "12px", "margin": 0}),
+        ]
+    card += [
+        html.Hr(style={"borderColor": "#0f3460", "margin": "12px 0"}),
+        html.Div(style={"display": "flex", "gap": "8px", "flexWrap": "wrap"}, children=[
+            html.Div(style={"display": "flex", "alignItems": "center", "gap": "5px"}, children=[
+                html.Div(style={"width": "12px", "height": "12px", "borderRadius": "50%",
+                                "backgroundColor": "#00e676"}),
+                html.Span("Start", style={"color": "#aaa", "fontSize": "11px"}),
+            ]),
+            html.Div(style={"display": "flex", "alignItems": "center", "gap": "5px"}, children=[
+                html.Div(style={"width": "12px", "height": "12px", "borderRadius": "50%",
+                                "backgroundColor": "#e94560", "border": "2px solid #FFD700"}),
+                html.Span("FAST University", style={"color": "#aaa", "fontSize": "11px"}),
+            ]),
+        ]),
+    ]
+
+    return elements, card
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
